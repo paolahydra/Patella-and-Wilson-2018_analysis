@@ -1,0 +1,415 @@
+% load stuff
+
+Folder2Save = '/Users/galileo/Dropbox (HMS)/Data/WINDS_100/Downsampled/SubsetFlies';
+load(fullfile(Folder2Save, 'datalist_selectWindFlies.mat'));
+load(fullfile(Folder2Save, 'R_matrix_downsampled_winds_100&86_withBaseline.mat'));
+R = Rflipped;
+clear Rflipped
+runfolders = sets.analysislist;
+
+clusterFolder = fullfile(Folder2Save, '/rawDataLinkage'); % linkage was already calculated on orchestra
+load(fullfile(clusterFolder, 'output_ward_Rzsp_linkage_winds_FLIPPED.mat'), 'Zc');
+cd(clusterFolder)
+pxKeep = true(size(R, 1),1);   % no (easily-detected at least) uncorrelated pixels within this dataset
+
+load('/Users/galileo/Dropbox (HMS)/Data/cmap19_spectral.mat', 'cmapwinds')
+      
+%% position figure 1 on left monitor
+figure;
+ 
+%% plot a higher N dendrogram for prectical reference
+maxLeavesDend = 300;
+figure; [~,Tdend,outpermLeaves] = dendrogram(Zc, maxLeavesDend, 'Orientation', 'left');
+axDend = gca;
+axDend.YTickLabel = [];
+export_fig(sprintf('dendrogram_maxLeaves%d.pdf',maxLeavesDend))
+
+%% batch-cluster for different Ks
+colors = [208,28,139; ...   %fucsia
+          31,120,180; ...   %blu
+          230,97,1; ...     % orange
+          51,160,44]./255;  % green         % color-code for traces
+      
+map = brewermap(256, 'RdBu');
+map(1:128,:) = [];
+K1 = 5;
+Kend = 13;
+for K = K1:Kend
+    disp(K)
+    % maxClustComponents = 150;
+    maxLeavesDend = K;
+    figure; [~,Tdend,outpermLeaves] = dendrogram(Zc, maxLeavesDend, 'Orientation', 'left');
+    axDend = gca;
+    axDend.YTickLabel = 1:maxLeavesDend;
+    export_fig(sprintf('dendrogram_maxLeaves%d.pdf',maxLeavesDend))
+    
+    %% cluster (main), sort klusts based on dendrogram -- AND THEN RE-SORT again [DO]
+    Tparent = cluster(Zc,'maxclust',K);
+    
+    % GOAL: Ki order of superclusts is fixed. Starting from the left-most
+    % cluster-branch in dendrogram, we need to figure out which klust(Ki) it
+    % corresponds to.
+    for Ki = 1:length(unique(Tparent))
+        tempKs = find(Tparent==Ki);
+        klust(Ki).k = (tempKs(:))';
+    end
+    for Ki = 1:length(unique(Tparent)), allElements(Ki, 1:length(klust(Ki).k)) = klust(Ki).k; end
+    
+    countLeaves = 1;
+    for Ki = 1:length(unique(Tparent))   %while ~isempty(leavesorder)
+        lengthLeave = 0;
+        leavesorder = find(Tdend == outpermLeaves(countLeaves));
+        countLeaves = countLeaves+1;
+        lengthLeave = lengthLeave + length(leavesorder);
+        firstLeaf(Ki) = leavesorder(1);
+        [dendrOrder(Ki), ~] = find(allElements==firstLeaf(Ki));
+        while sum(Tparent == dendrOrder(Ki)) > lengthLeave
+            leavesorder = find(Tdend == outpermLeaves(countLeaves));
+            countLeaves = countLeaves+1;
+            lengthLeave = lengthLeave + length(leavesorder);
+        end
+    end
+    clear leavesorder countLeaves leavesorder
+    
+    % Also rename T once and for all according to dendrogram
+    T = zeros(size(Tparent));
+    for Ki = 1:length(unique(Tparent))
+        T(Tparent==dendrOrder(Ki)) = Ki;
+        tempKs = find(T==Ki);
+        klustSorted(Ki).k = (tempKs(:))';
+    end
+    Tparent = T;
+    klust = klustSorted;
+    dendrOrder = 1:length(unique(Tparent));
+    clear klustSorted T
+    clear outpermLeaves %to avoid errors
+    save(sprintf('klust_maxClust%d.mat', K), 'klust', 'dendrOrder', 'Tparent');
+    nK = length(unique(Tparent));
+    
+    %% plot unconcatenated version of traces (rough, from R)
+    [hfig, hax] = figureTracesI_PP_pixels( length(unique(Tparent)), 100, 60 );  %figureTracesI_PP( length(unique(Tparent)), 1 );
+    hax = flipud(hax); % index 1 is bottom axis
+    for Ki = 1:nK
+        axes(hax(Ki)), hold on
+        allR = R(Tparent==Ki,:);
+        avg = mean(allR,1);
+        avg = reshape(avg(:), [],4);
+        for i = 1 : 4 
+            plot(avg(:,i), 'Color', colors(i,:))
+        end
+        plot([0, size(avg,1)], [0 0], '-k')
+        ylabel(sprintf('%d\n%d',Ki, sum(Tparent==Ki)))
+        hax(Ki).YLabel.FontSize = 7.5;
+    end
+    export_fig(sprintf('clustMain_%d_mtraces.pdf', nK))
+    close
+    %%
+    if K > K1
+        T1 = load(fullfile(clusterFolder, sprintf('klust_maxClust%d.mat', K-1)));
+        [table_T12] = crosstab(T1.Tparent, Tparent);
+        figure; imagesc(table_T12); colormap(map)
+        axis square
+        ax = gca;
+        ax.YTick = 1:K-1;
+        ax.XTick = 1:K;
+        ax.XGrid = 'on';
+        ax.YGrid = 'on';
+        export_fig(sprintf('table_pair_%d_%d.png',K-1, K))
+        close
+    end
+end
+
+
+%% select a K and plot subclusters (traces)
+K = 7;
+load(fullfile(clusterFolder, sprintf('klust_maxClust%d.mat', K)));   %'klust', 'dendrOrder', 'Tparent'); % these are sorted as in dedndrogram
+
+maxClustComponents = 60;
+folder = fullfile(clusterFolder, sprintf('%dclusters', K));
+if exist(folder) ~= 7
+    mkdir(folder);
+end
+cd(folder)
+    
+Tcomponents = cluster(Zc,'maxclust',maxClustComponents);
+[table_T10030] = crosstab(Tcomponents, Tparent);
+figure; imagesc(table_T10030)
+axis square
+ax = gca;
+ax.XTick = 1:K;
+ax.XTickLabel = sum(table_T10030);
+ax.XTickLabelRotation = 90;
+export_fig('table_main_components.png')
+
+nrows = K;
+ncols = max(sum(table_T10030>0)) + 1;
+[hfig, hax] = figureTracesI_PP_pixels( nrows, 100*ones(1,ncols), 60 );
+hax = flipud(hax);
+for Ki = 1:K
+    % parent cluster
+    axes(hax(Ki,1)), hold on
+    allR = R(Tparent==Ki,:);
+    avg = mean(allR,1);
+    avg = reshape(avg(:), [],4);
+    for i = 1 : 4
+        plot(avg(:,i), 'Color', colors(i,:))
+    end
+    plot([0, size(avg,1)], [0 0], '-k')
+    ylabel(sprintf('%d\n%d',Ki, sum(Tparent==Ki)))
+    hax(Ki,1).YLabel.FontSize = 8.5;
+    
+    % children clusters
+    
+    compNums = find(table_T10030(:,Ki));
+    for i = 1 : sum(table_T10030(:,Ki)>0) %number of component clusters
+        axes(hax(Ki,i+1)), hold on
+        allR = R(Tcomponents==compNums(i),:);
+        avg = mean(allR,1);
+        avg = reshape(avg(:), [],4);
+        for icol = 1 : 4
+            plot(avg(:,icol), 'Color', colors(icol,:))
+        end
+        plot([0, size(avg,1)], [0 0], '-k')
+        ylabel(sprintf('%d',sum(Tcomponents==compNums(i))))
+        hax(Ki,i+1).YLabel.FontSize = 6.5;
+        drawnow
+    end
+    linkaxes(hax(Ki,:), 'y')
+end
+
+export_fig(sprintf('clust%2d_subclusters_responses_baselines.pdf',K))
+close
+
+
+%% single cluster traces
+[hfig, hax] = figureTracesI_PP_pixels( nrows, 120, 60 );
+hax = flipud(hax);
+for Ki = 1:K
+    % parent cluster
+    axes(hax(Ki,1)), hold on
+    allR = R(Tparent==Ki,:);
+    avg = mean(allR,1);
+    avg = reshape(avg(:), [],4);
+    for i = 1 : 4
+        plot(ts_dec, avg(:,i), 'Color', colors(i,:))
+    end
+    plot([ts_dec(1), ts_dec(end)], [0 0], '-k')
+    ylabel(sprintf('%d\n%d',Ki, sum(Tparent==Ki)))
+    hax(Ki,1).YLabel.FontSize = 8.5;
+    hax(Ki,1).XTick = [0,4];
+end
+linkaxes(hax, 'y')
+hax(1,1).XTickLabel=[0,4];
+
+export_fig(sprintf('clust%2d_responses_baselines.pdf',K))
+close
+
+
+%%
+%% set for cluster maps
+
+K = 7;
+nK = K;
+load(fullfile(clusterFolder, sprintf('klust_maxClust%d.mat', K)));   %'klust', 'dendrOrder', 'Tparent'); % these are sorted as in dedndrogram
+% cmap = cmapwinds([ 6 1 9 5 2 7 3 ],:); % sort and select colors to
+% kind-of-match existing clusters %loaded with clusters
+load('/Users/galileo/Dropbox (HMS)/Data/cmap19_spectral.mat', 'cmap')
+
+
+cmap = cmapwinds([ 2 8 5 7 3 9 1 ],:); % sort and select colors to % 7clu downsampled
+
+
+% cmapwinds = cat(1, cmapwinds, cmap([4,6],:) );
+% cmap = cmapwinds([ 2 8 3 10 5 1 9 11 ],:); % sort and select colors to % 8clu downsampled zsc with baseline
+
+
+orDT = load('/Users/galileo/Dropbox (HMS)/Data/WINDS_100/datalist_allWINDS.mat', 'dataTable');
+orDT = orDT.dataTable;
+
+folderCluK = fullfile(clusterFolder, sprintf('%dclusters', K));
+if exist(folderCluK, 'dir') ~= 7
+    mkdir(folderCluK);
+end
+cd(folderCluK)
+
+
+clust = remapIndexedPointsToRun_RoisMaps_oldNew(Tparent, R_100, R_86);      %sukee
+
+% make maps (divided old/new because different dimensions)
+klust = makeplot_cMaps_superKlusts_singleIteration_oldNew(clust, klust, dendrOrder, cmap);
+folder = fullfile(folderCluK, 'alignedMaps');
+if exist(folder, 'dir') ~= 7
+    mkdir(folder)
+end
+cd(folder)
+
+nK = K;
+
+Col = cat(1,[1,1,1],cmap);
+
+regGeneralData = matfile('/Users/galileo/Dropbox (HMS)/Data/WINDS_100/anatomyImages/anatomy_alignment_metadata.mat');
+allStacks = regGeneralData.allStacks; %allStacks
+allStacks_flyNums = cat(1,allStacks.flyNum);
+
+
+figure; imagesc(1:size(cmap,1)); colormap(cmap)
+ax = gca;
+ax.YTick = [];
+ax.XTick = 1:nK;
+ax.Box = 'off';
+ax.XAxis.FontSize = 25;
+export_fig('cluster_colorbar.tif')
+
+save(fullfile(clusterFolder, sprintf('klust_maxClust%d.mat', K)), 'cmap', '-append'); 
+
+% %% retrieve legacy map filenames (already linked in illustrator)
+% % legacyLinkedNames = dir('/Users/galileo/Dropbox (HMS)/Data/WINDS_100/Downsampled/LinkedImages/alignedMaps');
+% % legacyLinkedNames = {legacyLinkedNames(4:70).name};
+% % save(fullfile(Folder2Save, 'datalist_selectWindFlies.mat'), 'legacyLinkedNames', '-append')
+
+
+%% make cluster maps - flies 100 only
+theseFlyNums = [175]; 
+
+for f = 1:length(theseFlyNums)
+    flyNum = theseFlyNums(f);
+    i_allSt = find(allStacks_flyNums == flyNum); 
+    zs_fly = dataTable.fly==flyNum; %ordinal numberwithin datalist
+    zetas = find(zs_fly);
+    
+        
+    %% load transformation data and make maps
+    for iz = 1:sum(zs_fly)
+        z = zetas(iz);          % change for flies 86
+        orZ = find( orDT.fly == dataTable.fly(z) & orDT.run == dataTable.run(z) ); %used to reference regGeneralData
+        
+        assert(strcmp(basenames{z}, sprintf('fly%d_run%02d',dataTable.fly(z), dataTable.run(z)) ), 'mismatch')
+        regData = matfile(fullfile(runfolders{z}, ['stackRegistration_' basenames{z} '.mat']));
+        
+        al2fly119_mapAll = [];
+        for Ki = 3 %1:length(unique(Tparent))
+            K2use = dendrOrder(Ki);
+            mapClean = klust(K2use).mapsZold(:,:,z);    % change for flies 86
+            mapClean(mapClean == nK+1) = 0;
+            mapClean(mapClean>=1) = 1; %binary so far                   % 69 x 86
+
+            %convert from downsampled to fullsize
+            mapClean = cat(1, mapClean, zeros(1,size(mapClean, 2)));    % 70 x 86
+            mapClean = cat(2, mapClean, zeros(size(mapClean, 1), 4));   % 70 x 90
+            mapClean = imresize(mapClean, [100 128]);                   % 100 x 128
+            %re-crop
+            mapClean(end,:) = [];
+            mapClean(:,end-5:end) = [];                                 % 99 x 122
+            mapClean(mapClean<0.3) = 0;
+            mapClean(mapClean>=0.1) = 1;                        %note 1 and not K2use!
+            
+            
+            %transformations here were NOT!!!! calculated over already downsampled data
+            mapClean = imrotate(mapClean, regGeneralData.totAng(1,orZ)); %preliminary transformation
+            recovered_mapClean = imwarp(mapClean,regData.tform,'OutputView',regData.Roriginal,'FillValues',0); %indexed image
+            al2fly119_mapClean = imwarp(recovered_mapClean,allStacks(i_allSt).tform,'OutputView',allStacks(i_allSt).Roriginal,'FillValues',0); %ok
+            al2fly119_mapClean(al2fly119_mapClean<=0.5) = 0;
+            al2fly119_mapClean(al2fly119_mapClean>=0.1) = Ki; %dendrogram is colored in order from 1st to nK-esim  in colormap. Clusters are colored accordingy.
+            if isempty(al2fly119_mapAll)
+                al2fly119_mapAll = al2fly119_mapClean;
+            else
+                al2fly119_mapAll(al2fly119_mapClean == Ki) = Ki; %dendrogram is colored in order from 1st to nK-esim  in colormap. Clusters are colored accordingy.
+            end
+        end
+
+        AllClusterMaps(:,:,z) = al2fly119_mapAll;
+
+        AlphaMatrix = zeros(size(al2fly119_mapAll(:,:,1)));
+        AlphaMatrix(al2fly119_mapAll(:,:,1) > 0) = 1;
+
+        al2fly119_mapAll = ind2rgb(uint8(al2fly119_mapAll), Col);
+%         savename = sprintf('alignALLklustsMap_fly%02d_ordZ%02d_%s.png', f, z, basenames{z});
+idx = cellstrfind(legacyLinkedNames, basenames{z}, 1);
+savename = legacyLinkedNames{idx};
+disp(basenames{z})
+disp(savename)
+disp('---')
+        imwrite(al2fly119_mapAll, savename, 'Alpha', double(AlphaMatrix))
+    end
+end
+
+
+% make cluster maps - flies 86 only
+theseFlyNums = [ 157  179   180]; 
+
+for f = 1:length(theseFlyNums)
+    flyNum = theseFlyNums(f);
+    if flyNum > 1000
+        hemisph = mod(flyNum,10);
+        flyNum = floor(flyNum/10);
+        zs_fly = dataTable.fly==flyNum & dataTable.ipsilateral == hemisph;      %logical indexing within datalist
+        runNames = dataTable.run(dataTable.fly==flyNum & dataTable.ipsilateral == hemisph);     %actual run number, to reconstruct flyname
+    else
+        zs_fly = dataTable.fly==flyNum;     %logical indexing within datalist
+        runNames = dataTable.run(dataTable.fly==flyNum);
+    end 
+    i_allSt = find(allStacks_flyNums == flyNum); %ef fix for fly 118
+    
+    %% sort runs from ventral to dorsal
+    zetas = find(zs_fly); 
+    sliceNums = dataTable.stacksZ(zs_fly);   
+    [sliceNums,b] = sort(sliceNums);        % stack slices paired to any functional run, (sorted ventral to dorsal)
+    zetas = zetas(b);                       % ordinal numbers relative to datalist, (sorted ventral to dorsal)
+    
+    %% load transformation data and make maps
+    for iz = 1:sum(zs_fly)          %iz is local counter within fly
+        z = zetas(iz);              % relative to datalist
+        orZ = find( orDT.fly == dataTable.fly(z) & orDT.run == dataTable.run(z) ); %used to reference regGeneralData
+        
+        
+        z_86 = z - NaZ_100;         % now this is relative to the R_86 subset
+        sliceNum = sliceNums(iz);   % still relative to its own stack
+        % load specific run's transformation
+        regData = matfile(fullfile(runfolders{z}, ['stackRegistration_' basenames{z} '.mat']));
+        
+        
+        al2fly119_mapAll = [];
+        for Ki = 3 %1:length(unique(Tparent))
+            K2use = dendrOrder(Ki);
+            mapClean = klust(K2use).mapsZnew(:,:,z_86);    % change for flies 86
+            mapClean(mapClean == nK+1) = 0;
+            mapClean(mapClean>=1) = 1; %binary so far
+
+            %convert from downsampled to fullsize
+            mapClean = cat(1, mapClean, zeros(1,size(mapClean, 2)));    
+            mapClean = cat(2, mapClean, zeros(size(mapClean, 1), 4));  
+            mapClean = imresize(mapClean, [86 128]);                   % 86 x 128
+            %re-crop
+            mapClean(end,:) = [];
+            mapClean(:,end-5:end) = [];                             
+            mapClean(mapClean<0.3) = 0;
+            mapClean(mapClean>=0.1) = 1;                        %note 1 and not K2use!
+            
+            
+            %transformations here were calculated over already downsampled data
+            mapClean = imrotate(mapClean, regGeneralData.totAng(1,orZ)); %preliminary transformation
+            recovered_mapClean = imwarp(mapClean,regData.tform,'OutputView',regData.Roriginal,'FillValues',0); %indexed image
+            al2fly119_mapClean = imwarp(recovered_mapClean,allStacks(i_allSt).tform,'OutputView',allStacks(i_allSt).Roriginal,'FillValues',0);
+            al2fly119_mapClean(al2fly119_mapClean<=0.5) = 0;
+            al2fly119_mapClean(al2fly119_mapClean>=0.1) = Ki; %dendrogram is colored in order from 1st to nK-esim  in colormap. Clusters are colored accordingy.
+            if isempty(al2fly119_mapAll)
+                al2fly119_mapAll = al2fly119_mapClean;
+            else
+                al2fly119_mapAll(al2fly119_mapClean == Ki) = Ki; %dendrogram is colored in order from 1st to nK-esim  in colormap. Clusters are colored accordingy.
+            end
+        end
+
+        AllClusterMaps(:,:,z) = al2fly119_mapAll;
+
+        AlphaMatrix = zeros(size(al2fly119_mapAll(:,:,1)));
+        AlphaMatrix(al2fly119_mapAll(:,:,1) > 0) = 1;
+
+        al2fly119_mapAll = ind2rgb(uint8(al2fly119_mapAll), Col);
+%         savename = sprintf('alignALLklustsMap_fly%02d_ordZ%02d_%s.png', f+3, z, basenames{z});  % change for flies 86
+idx = cellstrfind(legacyLinkedNames, basenames{z}, 1);
+savename = legacyLinkedNames{idx};
+        imwrite(al2fly119_mapAll, savename, 'Alpha', double(AlphaMatrix))
+    end
+end
+
+
